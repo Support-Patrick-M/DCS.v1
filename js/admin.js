@@ -1,22 +1,23 @@
 // ============================================================
-// admin.js — Admin dashboard, assign tasks, manage users, settings
+// admin.js — Admin: dashboard, manage tasks, manage users, settings
 // ============================================================
 
 function adminNav(view, el) {
   setActiveNav('s-admin', el);
-  const content = document.getElementById('admin-content');
-  if (view === 'dashboard') content.innerHTML = renderAdminDashboard();
-  if (view === 'assign')    content.innerHTML = renderAssignTask();
-  if (view === 'users')     content.innerHTML = renderManageUsers();
-  if (view === 'settings')  content.innerHTML = renderAdminSettings();
+  const c = document.getElementById('admin-content');
+  if (view === 'dashboard')    c.innerHTML = renderAdminDashboard();
+  if (view === 'manage-task')  c.innerHTML = renderManageTask();
+  if (view === 'users')        c.innerHTML = renderManageUsers();
+  if (view === 'settings')     c.innerHTML = renderChangePasswordForm('admin');
 }
 
-// ── Dashboard ───────────────────────────────────────────────
+// ── Dashboard ─────────────────────────────────────────────────
 
 function renderAdminDashboard() {
   const total   = DB.tasks.length;
   const done    = DB.tasks.filter(t => t.status === 'done').length;
   const taskers = getTaskers().length;
+  const comingSoon = DB.tasks.filter(t => t.tag === 'coming-soon').length;
 
   const rows = DB.tasks.length
     ? DB.tasks.map(t => `
@@ -24,109 +25,204 @@ function renderAdminDashboard() {
         <div class="task-info">
           <div class="task-title">${t.title}</div>
           <div class="task-meta">
-            Billable: ${fmtMinutes(t.billable)} &nbsp;|&nbsp;
-            Assigned to: ${t.assignedUsers.join(', ')}
-            ${t.uploaded ? `&nbsp;|&nbsp; File: ${t.uploaded}` : ''}
+            ₱${t.peso_rate}/min · Billable: ${fmtMinutes(t.billable)} ·
+            Assigned: ${t.assignedUsers.join(', ')}
+            ${t.uploaded ? ` · ${t.uploaded}` : ''}
           </div>
         </div>
-        <span class="badge ${t.status}">${t.status}</span>
+        <div class="task-actions">
+          <span class="badge ${t.tag === 'coming-soon' ? 'coming-soon' : 'task-active'}">
+            ${t.tag === 'coming-soon' ? 'Coming Soon' : 'Active'}
+          </span>
+          <span class="badge ${t.status}">${t.status}</span>
+        </div>
       </div>`).join('')
-    : '<p class="empty-state">No tasks created yet.</p>';
+    : `<div class="empty-state"><div class="empty-icon">◈</div>No tasks yet.</div>`;
 
   return `
-    <h2 class="section-title">Overview</h2>
-    <div class="grid-3 mb-lg">
-      ${metricCard('Total tasks', total)}
+    <div class="page-title">Dashboard</div>
+    <div class="page-sub">Overview of the system</div>
+    <div class="metrics-row">
+      ${metricCard('Total Tasks', total)}
       ${metricCard('Completed', done)}
       ${metricCard('Taskers', taskers)}
+      ${metricCard('Coming Soon', comingSoon)}
     </div>
-    <h2 class="section-title">All tasks</h2>
+    <div class="section-hd"><div class="section-title">All Tasks</div></div>
     <div class="card">${rows}</div>`;
 }
 
-// ── Assign task ─────────────────────────────────────────────
+// ── Manage Tasks ───────────────────────────────────────────────
+// Flow from flowchart:
+//  1. List all tasks with tag controls (Coming Soon / Active)
+//  2. Assign Task to Tasker section at bottom
 
-function renderAssignTask() {
+function renderManageTask() {
   const taskerOpts = getTaskers()
-    .filter(([, v]) => !v.disabled)
-    .map(([k, v]) => `<option value="${k}">${v.display} (${k})</option>`)
+    .filter(([,v]) => !v.disabled)
+    .map(([k,v]) => `<option value="${k}">${v.display} (${k})</option>`)
     .join('');
 
+  const taskRows = DB.tasks.map(t => {
+    const isComingSoon = t.tag === 'coming-soon';
+    return `
+      <div class="mtask-row" id="mtrow-${t.id}">
+        <div class="task-info">
+          <div class="task-title">${t.title}</div>
+          <div class="task-meta">₱${t.peso_rate}/min · Billable: ${fmtMinutes(t.billable)} · Assigned: ${t.assignedUsers.join(', ')}</div>
+        </div>
+        <div class="mtask-tag-actions">
+          <span class="badge ${isComingSoon ? 'coming-soon' : 'task-active'}" id="tag-badge-${t.id}">
+            ${isComingSoon ? 'Coming Soon' : 'Active'}
+          </span>
+          ${isComingSoon
+            ? `<button class="btn xs accent" onclick="setTaskTag(${t.id},'active')">Make Active</button>`
+            : `<button class="btn xs" onclick="setTaskTag(${t.id},'coming-soon')">Mark Coming Soon</button>`
+          }
+          <button class="btn xs danger" onclick="promptDeleteTask(${t.id}, '${t.title.replace(/'/g,"\\'")}')">Delete</button>
+        </div>
+      </div>`;
+  }).join('') || `<div class="empty-state"><div class="empty-icon">◈</div>No tasks yet. Create one below.</div>`;
+
   return `
-    <h2 class="section-title">Assign new task</h2>
-    <div class="card form-card">
-      <div class="field">
-        <label for="at-title">Task title</label>
-        <input type="text" id="at-title" placeholder="e.g. Drone footage batch B">
-      </div>
-      <div class="field">
-        <label for="at-billable">Billable minutes</label>
-        <input type="text" id="at-billable" placeholder="e.g. 90">
-      </div>
-      <div class="field">
-        <label>Assign to</label>
-        <div class="radio-group">
-          <label class="radio-opt">
-            <input type="radio" name="assign-mode" value="everyone" checked onchange="toggleAssignFields()">
-            Everyone (all active taskers)
-          </label>
-          <label class="radio-opt">
-            <input type="radio" name="assign-mode" value="section" onchange="toggleAssignFields()">
-            Multiple sections
-          </label>
-          <label class="radio-opt">
-            <input type="radio" name="assign-mode" value="specific" onchange="toggleAssignFields()">
-            Specific user
-          </label>
+    <div class="page-title">Manage Tasks</div>
+    <div class="page-sub">Tag tasks and assign them to taskers</div>
+
+    <!-- ── Task tag list ── -->
+    <div class="section-hd">
+      <div class="section-title">Task Status Tags</div>
+    </div>
+    <div class="info-box">
+      <strong>Coming Soon</strong> — upload button is disabled for taskers.<br>
+      <strong>Active</strong> — upload button is enabled; taskers can submit video.
+    </div>
+    <div class="card" style="margin-bottom:1.75rem">${taskRows}</div>
+
+    <!-- ── Assign task form ── -->
+    <div class="section-hd">
+      <div class="section-title">Assign Task to Tasker</div>
+    </div>
+    <div class="card" style="max-width:520px">
+      <div class="form-section-title">New Task Details</div>
+      <div class="form-row">
+        <div class="field">
+          <label>Task Title</label>
+          <input type="text" id="at-title" placeholder="e.g. Drone footage batch B">
+        </div>
+        <div class="field">
+          <label>Peso Rate / Minute (₱)</label>
+          <input type="number" id="at-peso" placeholder="e.g. 25" min="0" step="0.5">
         </div>
       </div>
-      <div id="assign-section-field" class="field" style="display:none">
-        <label for="at-sections">Section IDs (comma separated)</label>
+      <div class="field">
+        <label>Billable Hours / Minutes</label>
+        <input type="number" id="at-billable" placeholder="Total minutes (e.g. 90)" min="1">
+      </div>
+
+      <div class="divider"></div>
+      <div class="form-section-title">Assign To</div>
+
+      <div class="radio-group" id="assign-radio-group">
+        <label class="radio-opt">
+          <input type="radio" name="assign-mode" value="everyone" checked onchange="toggleAssignFields()">
+          <div>
+            <div class="radio-opt-lbl">Everyone</div>
+            <div class="radio-opt-desc">System assigns to all active taskers in the database.</div>
+          </div>
+        </label>
+        <label class="radio-opt">
+          <input type="radio" name="assign-mode" value="section" onchange="toggleAssignFields()">
+          <div>
+            <div class="radio-opt-lbl">Multiple Sections</div>
+            <div class="radio-opt-desc">Filter by Section_ID (e.g. tasker1, tasker2).</div>
+          </div>
+        </label>
+        <label class="radio-opt">
+          <input type="radio" name="assign-mode" value="specific" onchange="toggleAssignFields()">
+          <div>
+            <div class="radio-opt-lbl">Specific User</div>
+            <div class="radio-opt-desc">Admin searches and selects individual User_ID.</div>
+          </div>
+        </label>
+      </div>
+
+      <div id="assign-section-field" style="display:none;margin-top:12px" class="field">
+        <label>Section IDs (comma separated)</label>
         <input type="text" id="at-sections" placeholder="e.g. section_1, section_2">
       </div>
-      <div id="assign-specific-field" class="field" style="display:none">
-        <label for="at-specific">Select tasker</label>
-        <select id="at-specific">
-          <option value="">-- choose --</option>
-          ${taskerOpts}
-        </select>
+      <div id="assign-specific-field" style="display:none;margin-top:12px" class="field">
+        <label>Select Tasker</label>
+        <select id="at-specific"><option value="">-- choose --</option>${taskerOpts}</select>
       </div>
-      <div id="assign-msg" style="display:none"></div>
-      <div class="form-actions">
-        <button class="btn primary" onclick="doAssignTask()">Assign task</button>
+
+      <div id="assign-msg" style="display:none;margin-top:8px"></div>
+      <div class="form-actions" style="margin-top:1rem">
+        <button class="btn primary" onclick="doAssignTask()">Assign Task</button>
         <button class="btn" onclick="adminNav('dashboard', document.querySelector('#s-admin .nav-item'))">Cancel</button>
+      </div>
+      <div style="margin-top:10px">
+        <div id="tag-note" class="info-box" style="margin:0;font-size:11px">
+          ℹ New tasks are automatically tagged <strong>Coming Soon</strong>. Go to the list above to make them Active when ready.
+        </div>
       </div>
     </div>`;
 }
 
 function toggleAssignFields() {
   const mode = document.querySelector('input[name="assign-mode"]:checked').value;
-  document.getElementById('assign-section-field').style.display = mode === 'section'  ? 'block' : 'none';
+  document.getElementById('assign-section-field').style.display  = mode === 'section'  ? 'block' : 'none';
   document.getElementById('assign-specific-field').style.display = mode === 'specific' ? 'block' : 'none';
 }
 
 function doAssignTask() {
   const title    = document.getElementById('at-title').value.trim();
   const billable = document.getElementById('at-billable').value;
+  const peso     = document.getElementById('at-peso').value;
   const mode     = document.querySelector('input[name="assign-mode"]:checked').value;
-
   clearMsg('assign-msg');
   if (!title) { showMsg('assign-msg', 'Please enter a task title.'); return; }
 
-  const sections   = mode === 'section'  ? document.getElementById('at-sections').value  : '';
+  const sections    = mode === 'section'  ? document.getElementById('at-sections').value  : '';
   const specificUid = mode === 'specific' ? document.getElementById('at-specific').value  : '';
-
   if (mode === 'specific' && !specificUid) { showMsg('assign-msg', 'Please select a user.'); return; }
 
   const assignedUsers = resolveAssignedUsers(mode, sections, specificUid);
   if (!assignedUsers.length) { showMsg('assign-msg', 'No active taskers match the selection.'); return; }
 
-  taskCreate({ title, billable, assignTo: mode, assignedUsers });
-  showMsg('assign-msg', `Task assigned to: ${assignedUsers.join(', ')}`, 'success');
-  setTimeout(() => adminNav('dashboard', document.querySelector('#s-admin .nav-item')), 1200);
+  taskCreate({ title, billable, peso_rate: parseFloat(peso)||0, assignTo: mode, assignedUsers });
+  showMsg('assign-msg', `✓ Task created and tagged "Coming Soon". Assigned to: ${assignedUsers.join(', ')}`, 'success');
+  setTimeout(() => adminNav('manage-task', document.querySelectorAll('#s-admin .nav-item')[1]), 1400);
 }
 
-// ── Manage users ────────────────────────────────────────────
+function setTaskTag(taskId, tag) {
+  taskSetTag(taskId, tag);
+  // Re-render the manage task view in place
+  adminNav('manage-task', document.querySelectorAll('#s-admin .nav-item')[1]);
+}
+
+// ── Delete task ────────────────────────────────────────────────
+
+function promptDeleteTask(taskId, title) {
+  showModal(`
+    <div class="modal-title">Delete Task</div>
+    <p class="modal-body">
+      Permanently delete <strong>${title}</strong>?<br>
+      <span style="color:var(--color-text-danger, #a32d2d);font-size:12px">This action cannot be undone.</span>
+    </p>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn danger" onclick="confirmDeleteTask(${taskId})">Delete</button>
+    </div>`);
+}
+
+function confirmDeleteTask(taskId) {
+  taskDelete(taskId);
+  closeModal();
+  adminNav('manage-task', document.querySelectorAll('#s-admin .nav-item')[1]);
+}
+
+// ── Manage Users ───────────────────────────────────────────────
+// Three sub-actions: Create, Active/Disable, Update Password
 
 function renderManageUsers() {
   const taskers = getTaskers();
@@ -134,32 +230,70 @@ function renderManageUsers() {
   const rows = taskers.map(([uid, acc]) => `
     <div class="task-row">
       <div class="task-info">
-        <div class="task-title">${acc.display} <span class="uid-label">(${uid})</span></div>
+        <div class="task-title">${acc.display} <span style="font-size:11px;color:var(--ink-3);font-family:var(--font-mono)">(${uid})</span></div>
         <div class="task-meta">Section: ${acc.section || '—'}</div>
       </div>
       <div class="task-actions">
-        <span class="badge ${acc.disabled ? 'disabled' : 'active'}">${acc.disabled ? 'disabled' : 'active'}</span>
+        <span class="badge ${acc.disabled ? 'disabled' : 'active'}" id="status-chip-${uid}">
+          ${acc.disabled ? 'Disabled' : 'Active'}
+        </span>
         <button class="btn sm ${acc.disabled ? '' : 'danger'}" onclick="promptToggleDisable('${uid}')">
           ${acc.disabled ? 'Enable' : 'Disable'}
         </button>
+        <button class="btn sm" onclick="showUpdatePasswordModal('${uid}')">
+          Update Password
+        </button>
       </div>
-    </div>`).join('');
+    </div>`).join('') || `<div class="empty-state"><div class="empty-icon">◉</div>No taskers found.</div>`;
 
   return `
-    <div class="section-header">
-      <h2 class="section-title">User management</h2>
-      <button class="btn sm primary" onclick="showCreateUserModal()">+ Create user</button>
+    <div class="page-title">Manage Users</div>
+    <div class="page-sub">Create accounts, activate/disable, update passwords</div>
+
+    <div class="section-hd">
+      <div class="section-title">Tasker Accounts</div>
+      <button class="btn sm accent" onclick="showCreateUserModal()">+ Create User</button>
     </div>
-    <div class="card mb-lg">${rows || '<p class="empty-state">No taskers found.</p>'}</div>`;
+    <div class="card">${rows}</div>`;
 }
 
+// ── Create user modal ──────────────────────────────────────────
+function showCreateUserModal() {
+  showModal(`
+    <div class="modal-title">Create New User</div>
+    <div class="field"><label>Username</label><input type="text" id="nu-user" placeholder="e.g. tasker3"></div>
+    <div class="field"><label>Display Name</label><input type="text" id="nu-display" placeholder="e.g. Tasker Three"></div>
+    <div class="field">
+      <label>Role</label>
+      <select id="nu-role"><option value="tasker">Tasker</option><option value="admin">Admin</option></select>
+    </div>
+    <div class="field"><label>Password</label><input type="password" id="nu-pass" placeholder="Initial password"></div>
+    <div id="cu-msg" style="display:none"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary" onclick="doCreateUser()">Create</button>
+    </div>`);
+}
+
+function doCreateUser() {
+  const username = document.getElementById('nu-user').value.trim();
+  const display  = document.getElementById('nu-display').value.trim();
+  const role     = document.getElementById('nu-role').value;
+  const password = document.getElementById('nu-pass').value;
+  clearMsg('cu-msg');
+  if (!username || !display || !password) { showMsg('cu-msg', 'All fields are required.'); return; }
+  const r = userCreate({ username, display, role, password });
+  if (!r.ok) { showMsg('cu-msg', r.error); return; }
+  closeModal();
+  adminNav('users', document.querySelectorAll('#s-admin .nav-item')[2]);
+}
+
+// ── Toggle disable ─────────────────────────────────────────────
 function promptToggleDisable(uid) {
   const acc = DB.accounts[uid];
   showModal(`
-    <div class="modal-title">${acc.disabled ? 'Enable' : 'Disable'} account</div>
-    <p class="modal-body">
-      ${acc.disabled ? 'Re-enable' : 'Disable'} account for <strong>${acc.display}</strong>?
-    </p>
+    <div class="modal-title">${acc.disabled ? 'Enable' : 'Disable'} Account</div>
+    <p class="modal-body">${acc.disabled ? 'Re-enable' : 'Disable'} account for <strong>${acc.display}</strong>?</p>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" onclick="confirmToggleDisable('${uid}')">Confirm</button>
@@ -172,67 +306,42 @@ function confirmToggleDisable(uid) {
   adminNav('users', document.querySelectorAll('#s-admin .nav-item')[2]);
 }
 
-function showCreateUserModal() {
+// ── Update user password (admin action) ───────────────────────
+function showUpdatePasswordModal(uid) {
+  const acc = DB.accounts[uid];
   showModal(`
-    <div class="modal-title">Create new user</div>
-    <div class="field">
-      <label for="nu-user">Username</label>
-      <input type="text" id="nu-user" placeholder="e.g. tasker3">
-    </div>
-    <div class="field">
-      <label for="nu-display">Display name</label>
-      <input type="text" id="nu-display" placeholder="e.g. Tasker Three">
-    </div>
-    <div class="field">
-      <label for="nu-role">Role</label>
-      <select id="nu-role">
-        <option value="tasker">Tasker</option>
-        <option value="admin">Admin</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="nu-pass">Password</label>
-      <input type="password" id="nu-pass" placeholder="Set initial password">
-    </div>
-    <div id="cu-msg" style="display:none"></div>
+    <div class="modal-title">Update Password</div>
+    <p class="modal-body">Set a new password for <strong>${acc.display}</strong> (${uid}).</p>
+    <div class="field"><label>New Password</label><input type="password" id="upw-new" placeholder="New password"></div>
+    <div class="field"><label>Confirm Password</label><input type="password" id="upw-confirm" placeholder="Confirm password"></div>
+    <div id="upw-msg" style="display:none"></div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn primary" onclick="doCreateUser()">Create user</button>
+      <button class="btn primary" onclick="doUpdateUserPassword('${uid}')">Update</button>
     </div>`);
 }
 
-function doCreateUser() {
-  const username = document.getElementById('nu-user').value.trim();
-  const display  = document.getElementById('nu-display').value.trim();
-  const role     = document.getElementById('nu-role').value;
-  const password = document.getElementById('nu-pass').value;
-
-  clearMsg('cu-msg');
-  if (!username || !display || !password) { showMsg('cu-msg', 'All fields are required.'); return; }
-
-  const result = userCreate({ username, display, role, password });
-  if (!result.ok) { showMsg('cu-msg', result.error); return; }
-
-  closeModal();
-  adminNav('users', document.querySelectorAll('#s-admin .nav-item')[2]);
+function doUpdateUserPassword(uid) {
+  const newPw  = document.getElementById('upw-new').value;
+  const confPw = document.getElementById('upw-confirm').value;
+  clearMsg('upw-msg');
+  if (!newPw)          { showMsg('upw-msg', 'Password cannot be empty.'); return; }
+  if (newPw !== confPw){ showMsg('upw-msg', 'Passwords do not match.'); return; }
+  const r = userUpdatePassword(uid, newPw);
+  if (!r.ok) { showMsg('upw-msg', r.error); return; }
+  showMsg('upw-msg', 'Password updated!', 'success');
+  setTimeout(closeModal, 1000);
 }
 
-// ── Settings ────────────────────────────────────────────────
-
-function renderAdminSettings() {
-  return renderChangePasswordForm('admin');
-}
-
+// ── Admin settings password change ────────────────────────────
 function submitAdminPasswordChange() {
-  const result = authChangePassword(
+  const r = authChangePassword(
     DB.session.currentUid,
     document.getElementById('pw-old').value,
     document.getElementById('pw-new').value,
     document.getElementById('pw-confirm').value
   );
-  if (!result.ok) { showMsg('pw-msg', result.error); return; }
-  showMsg('pw-msg', 'Password updated successfully!', 'success');
-  document.getElementById('pw-old').value = '';
-  document.getElementById('pw-new').value = '';
-  document.getElementById('pw-confirm').value = '';
+  if (!r.ok) { showMsg('pw-msg', r.error); return; }
+  showMsg('pw-msg', 'Password updated!', 'success');
+  ['pw-old','pw-new','pw-confirm'].forEach(id => document.getElementById(id).value = '');
 }
